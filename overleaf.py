@@ -142,6 +142,31 @@ class ProjectClient:
         self.last_version = change['v']
         self.callbacks.on_change(change)
 
+    def set_position(self, pos: tuple[int, int] = None):
+        """ 设置当前用户的光标位置 """
+        if pos:
+            row, col = pos
+            self._client.emit('clientTracking.updatePosition', {
+                'row': row,
+                'column': col,
+                'doc_id': self.root_document()
+            })
+        else:
+            self._client.emit('clientTracking.updatePosition', {
+                'doc_id': None
+            })
+
+    def request_connected_users(self):
+        """ 发送“获取当前连接的用户”请求 """
+        def set_connected_clients(data):
+            _unknown, data = data
+            for user in data:
+                # getConnectedClients 请求到的用户结构体和 clientUpdated 事件的用户结构体略有差别
+                user['id'] = user['client_id']
+                self._on_update_user(user)
+
+        self._client.emit('clientTracking.getConnectedUsers', callback=lambda *data: set_connected_clients(data))
+
     def join_document(self, document_id: str):
         """ 注册当前客户端，否则收不到文档修改消息 """
         def update_document(data: tuple):
