@@ -11,6 +11,10 @@ from lxml import etree
 
 # logging.basicConfig(level=logging.DEBUG)
 
+def _sha1(data: str) -> str:
+    import hashlib
+    return hashlib.sha1(data.encode()).hexdigest()
+
 @dataclass
 class ProjectCallback:
     @staticmethod
@@ -66,9 +70,11 @@ class ProjectClient:
         self.project_id = project_id
         self.info_dict = None
 
+        self.current_doc_id: str = ''
+        """  当前文档的 id """
         self.current_doc_text: str = ''
         """ 当前文档的全部内容 """
-        self.last_version = 0
+        self.next_version = 0
         """ 当前文档的版本号（从文档创建开始计数） """
 
     def who(self, connection_id: str) -> str | None:
@@ -139,8 +145,50 @@ class ProjectClient:
                 其中，v 表示当前文档的版本号
         :return:
         """
-        self.last_version = change['v']
+        self.next_version = change['v']
         self.callbacks.on_change(change)
+
+    def _do_op(self, method, content, position):
+        """ 在文档上执行修改 """
+        match method:
+            case 'd':
+                self.current_doc_text = self.current_doc_text[:position] + self.current_doc_text[position + len(content):]
+            case 'i':
+                self.current_doc_text = self.current_doc_text[:position] + content + self.current_doc_text[position:]
+            case _:
+                raise ValueError('method must be "d" or "i"')
+
+    def edit_many(self, changes: list[tuple[str, str, int]]):
+        """
+        批量修改文档
+        :param changes: [(method, content, position), ...]
+        :return:
+        """
+        for method, content, position in changes:
+            assert method in ['d', 'i'], 'method must be "d" or "i"'
+            assert position >= 0, 'position must be greater than or equal to 0'
+            assert content, 'content must not be empty'
+            self._do_op(method, content, position)
+
+        # ["65f9462e5845636c9a353faf",{"doc":"65f9462e5845636c9a353faf","op":[{"p":0,"d":"d"}],"v":83,"lastV":82,"hash":"9f8e1663d2eb9a2e6a19a7484fa57863b0ffcd4e"}]
+        operations = [{'p': position, method: content} for method, content, position in changes]
+        self._client.emit('applyOtUpdate', self.current_doc_id, {
+            "doc": self.project_id,
+            "op": operations,
+            "v": self.next_version,
+            "lastV": self.next_version - 1,
+            "hash": _sha1(f'blob {len(self.current_doc_text)}\0{self.current_doc_text}')
+        }, callback=lambda *data: None)
+
+    def edit(self, method: str, content: str, position: int):
+        """
+        event: applyOtUpdate
+        :param method:
+        :param content:
+        :param position:
+        :return:
+        """
+        return self.edit_many([(method, content, position)])
 
     def set_position(self, pos: tuple[int, int] = None):
         """ 设置当前用户的光标位置 """
@@ -169,16 +217,24 @@ class ProjectClient:
 
     def join_document(self, document_id: str):
         """ 注册当前客户端，否则收不到文档修改消息 """
+        if self.current_doc_id:
+            self.leave_document(self.current_doc_id)
+
         def update_document(data: tuple):
             _unknown, lines, version, _unknown2, _unknown3 = data
             self.current_doc_text = '\n'.join(lines)
-            self.last_version = version
+            self.next_version = version
 
-        self._client.emit('joinDoc', document_id, {"encodeRanges": True}, lambda *data: update_document(data))
+        self._client.emit('joinDoc', document_id, {"encodeRanges": True}, callback=lambda *data: update_document(data))
+        self.current_doc_id = document_id
 
     def leave_document(self, document_id: str):
         """ 离开文档 """
-        self._client.emit('leaveDoc', document_id)
+        def leave_callback(data):
+            pass
+
+        self._client.emit('leaveDoc', document_id, callback=leave_callback)
+        self.current_doc_id = ''
 
     def _register(self):
         count = 3
@@ -208,9 +264,16 @@ class ProjectClient:
         self._client.on('otUpdateApplied', lambda data: self._on_change(data))
         self._register()
 
-    def wait(self):
+    def wait(self, duration: int = 2 ** 32):
+        assert duration >= 1, 'duration must be greater than 1'
+
+        start_sec = time.time()
         while True:
-            self._client.wait(1)
+            self._client.wait(0.2)
+            elapsed = time.time() - start_sec
+
+            if elapsed >= duration:
+                break
 
 class Client:
     _BASE_URL = 'https://www.overleaf.com'
@@ -266,4 +329,6 @@ if __name__ == '__main__':
     callbacks = ProjectLogger()
     ws = client.open(project_id, callbacks=callbacks)
 
+    ws.wait(3)
+    ws.edit('i', 'Hello, world!', 0)
     ws.wait()
