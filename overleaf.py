@@ -12,21 +12,29 @@ from lxml import etree
 # logging.basicConfig(level=logging.DEBUG)
 
 @dataclass
-class ProjectCallbacks:
+class ProjectCallback:
     @staticmethod
     def on_project_updated(project: dict):
+        """" 服务端推送文档基本信息 """
         pass
 
     @staticmethod
     def on_user_updated(user: dict):
+        """ 用户位置更新/上线消息 """
         pass
 
     @staticmethod
     def on_disconnected(connection_id: str):
+        """ 用户下线消息 """
+        pass
+
+    @staticmethod
+    def on_change(change: dict):
+        """ 文档修改消息 """
         pass
 
 
-class ProjectLogger(ProjectCallbacks):
+class ProjectLogger(ProjectCallback):
     @staticmethod
     @override
     def on_project_updated(project: dict):
@@ -42,9 +50,14 @@ class ProjectLogger(ProjectCallbacks):
     def on_disconnected(connection_id: str):
         print('User disconnected:', connection_id)
 
+    @staticmethod
+    @override
+    def on_change(change: dict):
+        print('Change:', change)
+
 
 class ProjectClient:
-    def __init__(self, cookie: dict, project_id: str, callbacks: ProjectCallbacks = None):
+    def __init__(self, cookie: dict, project_id: str, callbacks: ProjectCallback = ProjectCallback()):
         self._client = None
         self.cookie = cookie
         self.project_id = project_id
@@ -53,6 +66,13 @@ class ProjectClient:
         self.users = {}
         self.callbacks = callbacks
 
+    def who(self, connection_id: str) -> str | None:
+        """ 根据连接编号获取用户信息 """
+        if connection_id in self.users:
+            user = self.users[connection_id]
+            return f'{user["name"]}({user["email"]})'
+        return None
+
     def _update_project(self, project: dict):
         """
         event: joinProjectResponse
@@ -60,8 +80,7 @@ class ProjectClient:
         :return:
         """
         self.info_dict = project
-        if self.callbacks:
-            self.callbacks.on_project_updated(project)
+        self.callbacks.on_project_updated(project)
 
     def _update_users(self, user: dict):
         """
@@ -83,8 +102,7 @@ class ProjectClient:
         else:
             self.users[key].update(user)
 
-        if self.callbacks:
-            self.callbacks.on_user_updated(user)
+        self.callbacks.on_user_updated(user)
 
     def _disconnected(self, connection_id: str):
         """
@@ -96,8 +114,20 @@ class ProjectClient:
             self.users[connection_id]['online'] = False
             self.users[connection_id]['lastSeen'] = time.time()
 
-        if self.callbacks:
-            self.callbacks.on_disconnected(connection_id)
+        self.callbacks.on_disconnected(connection_id)
+
+    def _change(self, change: dict):
+        """
+        event: otUpdateApplied
+        :param {"doc":"65f9462e5845636c9a353faf",
+                "op":[{"p":1189,"i":"g"},{"p":1189,"d":"g"}],
+                "v":81,
+                "meta":{"source":"P.mjeGUE16Cydbd67ZBB5u","user_id":"644bc9e06ad7d9204f9c8948","ts":1728792367895},
+                "lastV":80,
+                "hash":"9f8e1663d2eb9a2e6a19a7484fa57863b0ffcd4e"}
+        :return:
+        """
+        self.callbacks.on_change(change)
 
     def run(self):
         cookie_str = '; '.join([f'{key}={value}' for key, value in self.cookie.items()])
@@ -111,6 +141,7 @@ class ProjectClient:
         self._client.on('joinProjectResponse', lambda data: self._update_project(data))
         self._client.on('clientTracking.clientUpdated', lambda data: self._update_users(data))
         self._client.on('clientTracking.clientDisconnected', lambda data: self._disconnected(data))
+        self._client.on('otUpdateApplied', lambda data: self._change(data))
         self._client.wait_for_callbacks()
 
     def wait(self):
@@ -149,7 +180,7 @@ class Client:
         projects = json.loads(projects_json)
         return projects['projects']
 
-    def open(self, project_id: str, callbacks: ProjectCallbacks) -> ProjectClient:
+    def open(self, project_id: str, callbacks: ProjectCallback) -> ProjectClient:
         """ 打开一个项目的 websocket 连接. """
         ws_client = ProjectClient(self.cookie_session, project_id, callbacks)
         ws_client.run()
