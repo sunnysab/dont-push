@@ -59,12 +59,17 @@ class ProjectLogger(ProjectCallback):
 class ProjectClient:
     def __init__(self, cookie: dict, project_id: str, callbacks: ProjectCallback = ProjectCallback()):
         self._client = None
-        self.cookie = cookie
-        self.project_id = project_id
-        self.info_dict = None
         # connection id -> user(userinfo, cursor)
         self.users = {}
         self.callbacks = callbacks
+        self.cookie = cookie
+        self.project_id = project_id
+        self.info_dict = None
+
+        self.current_doc_text: str = ''
+        """ 当前文档的全部内容 """
+        self.last_version = 0
+        """ 当前文档的版本号（从文档创建开始计数） """
 
     def who(self, connection_id: str) -> str | None:
         """ 根据连接编号获取用户信息 """
@@ -73,7 +78,11 @@ class ProjectClient:
             return f'{user["name"]}({user["email"]})'
         return None
 
-    def _update_project(self, project: dict):
+    def root_document(self):
+        """ 获取根文档的 id """
+        return self.info_dict['project']['rootDoc_id']
+
+    def _on_project_info(self, project: dict):
         """
         event: joinProjectResponse
         :param project:
@@ -82,7 +91,7 @@ class ProjectClient:
         self.info_dict = project
         self.callbacks.on_project_updated(project)
 
-    def _update_users(self, user: dict):
+    def _on_update_user(self, user: dict):
         """
         event: clientTracking.clientUpdated
         :param {"row":19,
@@ -104,7 +113,7 @@ class ProjectClient:
 
         self.callbacks.on_user_updated(user)
 
-    def _disconnected(self, connection_id: str):
+    def _on_someone_disconnected(self, connection_id: str):
         """
         event: clientTracking.clientDisconnected
         :param connection_id:
@@ -116,7 +125,7 @@ class ProjectClient:
 
         self.callbacks.on_disconnected(connection_id)
 
-    def _change(self, change: dict):
+    def _on_change(self, change: dict):
         """
         event: otUpdateApplied
         :param {"doc":"65f9462e5845636c9a353faf",
@@ -125,9 +134,39 @@ class ProjectClient:
                 "meta":{"source":"P.mjeGUE16Cydbd67ZBB5u","user_id":"644bc9e06ad7d9204f9c8948","ts":1728792367895},
                 "lastV":80,
                 "hash":"9f8e1663d2eb9a2e6a19a7484fa57863b0ffcd4e"}
+                对于当前客户端的修改，返回另一种形式：
+                [{"v":83,"doc":"65f9462e5845636c9a353faf"}]
+                其中，v 表示当前文档的版本号
         :return:
         """
+        self.last_version = change['v']
         self.callbacks.on_change(change)
+
+    def join_document(self, document_id: str):
+        """ 注册当前客户端，否则收不到文档修改消息 """
+        def update_document(data: tuple):
+            _unknown, lines, version, _unknown2, _unknown3 = data
+            self.current_doc_text = '\n'.join(lines)
+            self.last_version = version
+
+        self._client.emit('joinDoc', document_id, {"encodeRanges": True}, lambda *data: update_document(data))
+
+    def leave_document(self, document_id: str):
+        """ 离开文档 """
+        self._client.emit('leaveDoc', document_id)
+
+    def _register(self):
+        count = 3
+        while self.info_dict is None and count:
+            self._client.wait(1)
+            count -= 1
+
+        root_doc_id = self.root_document()
+
+        self.set_position(None)
+        self.request_connected_users()
+        self.join_document(root_doc_id)
+        self.set_position((0, 0))
 
     def run(self):
         cookie_str = '; '.join([f'{key}={value}' for key, value in self.cookie.items()])
@@ -138,11 +177,11 @@ class ProjectClient:
                                 },
                                 headers={'Cookie': cookie_str})
 
-        self._client.on('joinProjectResponse', lambda data: self._update_project(data))
-        self._client.on('clientTracking.clientUpdated', lambda data: self._update_users(data))
-        self._client.on('clientTracking.clientDisconnected', lambda data: self._disconnected(data))
-        self._client.on('otUpdateApplied', lambda data: self._change(data))
-        self._client.wait_for_callbacks()
+        self._client.on('joinProjectResponse', lambda data: self._on_project_info(data))
+        self._client.on('clientTracking.clientUpdated', lambda data: self._on_update_user(data))
+        self._client.on('clientTracking.clientDisconnected', lambda data: self._on_someone_disconnected(data))
+        self._client.on('otUpdateApplied', lambda data: self._on_change(data))
+        self._register()
 
     def wait(self):
         while True:
