@@ -37,6 +37,11 @@ class ProjectCallback:
         """ 文档修改消息 """
         pass
 
+    @staticmethod
+    def on_update_error(details: tuple):
+        """ 文档修改失败 """
+        pass
+
 
 class ProjectLogger(ProjectCallback):
     @staticmethod
@@ -58,6 +63,11 @@ class ProjectLogger(ProjectCallback):
     @override
     def on_change(change: dict):
         print('Change:', change)
+
+    @staticmethod
+    @override
+    def on_update_error(details: tuple):
+        print('Update error:', details)
 
 
 class ProjectClient:
@@ -147,6 +157,19 @@ class ProjectClient:
         """
         self.next_version = change['v']
         self.callbacks.on_change(change)
+
+    def _on_update_error(self, details: tuple):
+        """
+        event: otUpdateError
+        :param "Invalid hash", {
+                    "project_id":"65f9462e5845636c9a353fa6",
+                    "doc_id":"65f9462e5845636c9a353faf",
+                    "error":"Invalid hash",
+                    "_id":"doc:document-updater-prod-66fb5d46b9-sl5lr:16ef6681-8278191"}
+        :return:
+        """
+        logging.error('Error: %s', details)
+        self.callbacks.on_update_error(details)
 
     def _do_op(self, method, content, position):
         """ 在文档上执行修改 """
@@ -262,6 +285,7 @@ class ProjectClient:
         self._client.on('clientTracking.clientUpdated', lambda data: self._on_update_user(data))
         self._client.on('clientTracking.clientDisconnected', lambda data: self._on_someone_disconnected(data))
         self._client.on('otUpdateApplied', lambda data: self._on_change(data))
+        self._client.on('otUpdateError', lambda data: self._on_update_error(data))
         self._register()
 
     def wait(self, duration: int = 2 ** 32):
