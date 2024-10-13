@@ -158,7 +158,7 @@ class ProjectClient:
         self.next_version = change['v']
         self.callbacks.on_change(change)
 
-    def _on_update_error(self, details: tuple):
+    def _on_update_error(self, *details):
         """
         event: otUpdateError
         :param "Invalid hash", {
@@ -195,12 +195,14 @@ class ProjectClient:
 
         # ["65f9462e5845636c9a353faf",{"doc":"65f9462e5845636c9a353faf","op":[{"p":0,"d":"d"}],"v":83,"lastV":82,"hash":"9f8e1663d2eb9a2e6a19a7484fa57863b0ffcd4e"}]
         operations = [{'p': position, method: content} for method, content, position in changes]
+        # 在 DevTools 中搜索 "applyOtUpdate", 然后下断点。
+        # 触发断点后根据调用栈找到调用位置
         self._client.emit('applyOtUpdate', self.current_doc_id, {
-            "doc": self.project_id,
+            "doc": self.current_doc_id,
             "op": operations,
             "v": self.next_version,
             "lastV": self.next_version - 1,
-            "hash": _sha1(f'blob {len(self.current_doc_text)}\0{self.current_doc_text}')
+            "hash": _sha1(f'blob {len(self.current_doc_text)}\x00{self.current_doc_text}')
         }, callback=lambda *data: None)
 
     def edit(self, method: str, content: str, position: int):
@@ -285,7 +287,7 @@ class ProjectClient:
         self._client.on('clientTracking.clientUpdated', lambda data: self._on_update_user(data))
         self._client.on('clientTracking.clientDisconnected', lambda data: self._on_someone_disconnected(data))
         self._client.on('otUpdateApplied', lambda data: self._on_change(data))
-        self._client.on('otUpdateError', lambda data: self._on_update_error(data))
+        self._client.on('otUpdateError', lambda *data: self._on_update_error(data))
         self._register()
 
     def wait(self, duration: int = 2 ** 32):
@@ -293,7 +295,7 @@ class ProjectClient:
 
         start_sec = time.time()
         while True:
-            self._client.wait(0.2)
+            self._client.wait(0.5)
             elapsed = time.time() - start_sec
 
             if elapsed >= duration:
