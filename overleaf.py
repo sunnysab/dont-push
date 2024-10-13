@@ -1,6 +1,9 @@
 import json
 import logging
 import time
+from dataclasses import dataclass
+from typing import override
+
 import requests
 from socketIO_client import SocketIO
 from lxml import etree
@@ -8,29 +11,116 @@ from lxml import etree
 
 # logging.basicConfig(level=logging.DEBUG)
 
+@dataclass
+class ProjectCallbacks:
+    @staticmethod
+    def on_project_updated(project: dict):
+        pass
+
+    @staticmethod
+    def on_user_updated(user: dict):
+        pass
+
+    @staticmethod
+    def on_disconnected(connection_id: str):
+        pass
+
+
+class ProjectLogger(ProjectCallbacks):
+    @staticmethod
+    @override
+    def on_project_updated(project: dict):
+        print('Project updated:', project)
+
+    @staticmethod
+    @override
+    def on_user_updated(user: dict):
+        print('User updated:', user)
+
+    @staticmethod
+    @override
+    def on_disconnected(connection_id: str):
+        print('User disconnected:', connection_id)
+
+
 class ProjectClient:
-    def __init__(self, cookie: str, project_id: str):
+    def __init__(self, cookie: dict, project_id: str, callbacks: ProjectCallbacks = None):
         self._client = None
         self.cookie = cookie
         self.project_id = project_id
         self.info_dict = None
+        # connection id -> user(userinfo, cursor)
+        self.users = {}
+        self.callbacks = callbacks
+
+    def _update_project(self, project: dict):
+        """
+        event: joinProjectResponse
+        :param project:
+        :return:
+        """
+        self.info_dict = project
+        if self.callbacks:
+            self.callbacks.on_project_updated(project)
+
+    def _update_users(self, user: dict):
+        """
+        event: clientTracking.clientUpdated
+        :param {"row":19,
+                "column":14,
+                "doc_id":"65f9462e5845636c9a353faf",
+                "id":"P.r5rP7AC1YT5Fo0T2BBRK",
+                "user_id":"5eb3865a68a19f0001d912d9",
+                "email":"i@sunnysab.cn",
+                "name":"sunnysab"
+               }
+        """
+        key = user['id']
+        user['online'] = True
+        user['lastSeen'] = time.time()
+        if key not in self.users:
+            self.users[key] = user
+        else:
+            self.users[key].update(user)
+
+        if self.callbacks:
+            self.callbacks.on_user_updated(user)
+
+    def _disconnected(self, connection_id: str):
+        """
+        event: clientTracking.clientDisconnected
+        :param connection_id:
+        :return:
+        """
+        if connection_id in self.users:
+            self.users[connection_id]['online'] = False
+            self.users[connection_id]['lastSeen'] = time.time()
+
+        if self.callbacks:
+            self.callbacks.on_disconnected(connection_id)
 
     def run(self):
+        cookie_str = '; '.join([f'{key}={value}' for key, value in self.cookie.items()])
         self._client = SocketIO('https://www.overleaf.com',
                                 params={
                                     't': int(time.time()),
                                     'projectId': project_id
                                 },
-                                headers={'Cookie': self.cookie})
+                                headers={'Cookie': cookie_str})
 
-        def set_project_infos(project_infos_dict):
-            self.info_dict = project_infos_dict.get("project", {})
-        self._client.on('joinProjectResponse', set_project_infos)
+        self._client.on('joinProjectResponse', lambda data: self._update_project(data))
+        self._client.on('clientTracking.clientUpdated', lambda data: self._update_users(data))
+        self._client.on('clientTracking.clientDisconnected', lambda data: self._disconnected(data))
+        self._client.wait_for_callbacks()
+
+    def wait(self):
+        while True:
+            self._client.wait(1)
 
 class Client:
     _BASE_URL = 'https://www.overleaf.com'
 
-    def __init__(self, cookie_session: str):
+    def __init__(self, cookie_session: dict):
         self.cookie_session = cookie_session
         self.http_client = requests.Session()
 
@@ -50,7 +140,7 @@ class Client:
         }
         """
         URL = 'https://www.overleaf.com/project'
-        response = self.http_client.get(URL, cookies={'overleaf_session2': self.cookie_session})
+        response = self.http_client.get(URL, cookies=self.cookie_session)
         response.raise_for_status()
 
         page = etree.HTML(response.text)
@@ -59,19 +149,17 @@ class Client:
         projects = json.loads(projects_json)
         return projects['projects']
 
-    def open(self, project_id: str) -> ProjectClient:
+    def open(self, project_id: str, callbacks: ProjectCallbacks) -> ProjectClient:
         """ 打开一个项目的 websocket 连接. """
-        # wss://www.overleaf.com/socket.io/1/websocket/jNwcOnDPJ_p4YNmphQ_P?projectId=65f9462e5845636c9a353fa6
-        ws_client = ProjectClient(self.cookie_session, project_id)
+        ws_client = ProjectClient(self.cookie_session, project_id, callbacks)
         ws_client.run()
         return ws_client
 
 if __name__ == '__main__':
-    # from cookie import load_browser_cookie
-    # cookie_string = load_browser_cookie('firefox')
+    from cookie import load_browser_cookie
+    cookie_dict = load_browser_cookie('firefox')
 
-    cookie_string = 's%3A6fHFW0DrUU3x_h8F1VWO_jDlYk8AwsPw.EW4snnZyY8sOwi6jtyfmZH4%2FTnA%2B3aS3J4fJExKfHSU'
-    client = Client(cookie_string)
+    client = Client(cookie_dict)
 
     projects = client.get_projects()
     print(projects)
@@ -79,4 +167,8 @@ if __name__ == '__main__':
     # 选择一个项目，打开它的 websocket
     # project_id = projects[0]['id']
     project_id = '65f9462e5845636c9a353fa6'
-    client.open(project_id)
+
+    callbacks = ProjectLogger()
+    ws = client.open(project_id, callbacks=callbacks)
+
+    ws.wait()

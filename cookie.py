@@ -1,7 +1,7 @@
 from http.cookiejar import CookieJar, Cookie
 
 
-def load_browser_cookie(browser: str) -> str:
+def load_browser_cookie(browser: str) -> dict:
     """
     从指定的浏览器中加载 overleaf 站点的 cookie
     """
@@ -22,13 +22,17 @@ def load_browser_cookie(browser: str) -> str:
     cookies: CookieJar = load(domain_name='.overleaf.com')
     try:
         overleaf_session: Cookie = cookies.__dict__['_cookies']['.overleaf.com']['/']['overleaf_session2']
+        gclb: Cookie = cookies.__dict__['_cookies']['www.overleaf.com']['/']['GCLB']
     except ValueError as e:
         raise ValueError("Cookie not found") from e
 
-    return overleaf_session.value
+    return {
+        'GCLB': gclb.value,
+        'overleaf_session2': overleaf_session.value
+    }
 
 
-def load_browser_cookie_or_none(browser: str) -> str | None:
+def load_browser_cookie_or_none(browser: str) -> dict | None:
     """
     从指定的浏览器中加载 overleaf 站点的 cookie
     """
@@ -38,3 +42,4 @@ def load_browser_cookie_or_none(browser: str) -> str | None:
     except Exception as _:
         pass
     return None
+
