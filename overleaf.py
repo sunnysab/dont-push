@@ -215,6 +215,15 @@ class ProjectClient:
         """
         return self.edit_many([(method, content, position)])
 
+    def insert(self, position: int, content: str):
+        """ 插入文本 """
+        self.edit('i', content, position)
+
+    def delete(self, position: int, length: int):
+        """ 删除文本 """
+        text_to_delete = self.current_doc_id[position: position+length]
+        self.edit('d', text_to_delete, position)
+
     def set_position(self, pos: tuple[int, int] = None):
         """ 设置当前用户的光标位置 """
         if pos:
